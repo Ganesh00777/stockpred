@@ -1,0 +1,711 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0D1117">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<title>StockPred</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0D1117; --surface: #161B22; --surface2: #1C2128;
+  --border: #21262D; --border2: #30363D;
+  --accent: #58A6FF; --accent-bg: #1A3A5F;
+  --green: #3FB950; --green-bg: #122820;
+  --red: #F85149; --red-bg: #2D1215;
+  --yellow: #E3B341; --yellow-bg: #272115;
+  --text: #E6EDF3; --muted: #8B949E; --dim: #484F58;
+  --mono: 'JetBrains Mono', monospace;
+  --sans: 'Inter', sans-serif;
+  --nav-h: 60px; --tab-h: 56px; --safe-top: env(safe-area-inset-top, 0px);
+}
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; overflow: hidden; background: var(--bg); color: var(--text); font-family: var(--sans); }
+
+/* ── App Shell ── */
+#app { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+
+/* ── Top Nav ── */
+.top-nav {
+  height: var(--nav-h); background: var(--surface); border-bottom: 1px solid var(--border);
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 0 16px; flex-shrink: 0; padding-top: var(--safe-top);
+}
+.nav-brand { font-family: var(--mono); font-size: 16px; font-weight: 600; color: var(--accent); letter-spacing: -0.02em; }
+.nav-brand span { color: var(--green); }
+.nav-right { display: flex; align-items: center; gap: 10px; }
+.nav-badge { font-family: var(--mono); font-size: 10px; padding: 2px 7px; background: var(--green-bg); color: var(--green); border-radius: 20px; font-weight: 600; }
+.nav-btn { width: 32px; height: 32px; border-radius: 50%; border: 1px solid var(--border2); background: var(--surface2); display: flex; align-items: center; justify-content: center; cursor: pointer; }
+
+/* ── Scrollable content ── */
+.content-area { flex: 1; overflow-y: auto; overflow-x: hidden; -webkit-overflow-scrolling: touch; }
+.page { display: none; padding: 12px 14px 80px; min-height: 100%; }
+.page.active { display: block; }
+
+/* ── Bottom Tab Bar ── */
+.tab-bar {
+  height: var(--tab-h); background: var(--surface); border-top: 1px solid var(--border);
+  display: flex; align-items: center; flex-shrink: 0;
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+.tab-btn {
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center;
+  gap: 3px; cursor: pointer; padding: 8px 0; background: none; border: none;
+  color: var(--dim); transition: color .15s;
+}
+.tab-btn.active { color: var(--accent); }
+.tab-btn svg { width: 20px; height: 20px; }
+.tab-label { font-size: 10px; font-weight: 500; letter-spacing: 0.02em; }
+
+/* ── Signal Cards ── */
+.section-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; }
+.section-title { font-size: 12px; font-weight: 600; color: var(--muted); letter-spacing: 0.06em; text-transform: uppercase; font-family: var(--mono); }
+.refresh-btn { font-size: 11px; color: var(--accent); font-family: var(--mono); cursor: pointer; background: none; border: none; padding: 4px 8px; border-radius: 4px; }
+.refresh-btn:active { background: var(--accent-bg); }
+
+.signal-card {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  padding: 14px; margin-bottom: 10px; cursor: pointer; transition: border-color .15s;
+  position: relative; overflow: hidden;
+}
+.signal-card::before {
+  content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+}
+.signal-card.buy::before { background: var(--green); }
+.signal-card.sell::before { background: var(--red); }
+.signal-card:active { border-color: var(--border2); }
+
+.card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+.card-symbol { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text); }
+.card-exchange { font-family: var(--mono); font-size: 10px; color: var(--dim); margin-left: 5px; }
+.card-dir {
+  font-family: var(--mono); font-size: 11px; font-weight: 600; padding: 3px 10px; border-radius: 20px;
+}
+.card-dir.buy { background: var(--green-bg); color: var(--green); }
+.card-dir.sell { background: var(--red-bg); color: var(--red); }
+
+.card-price { font-family: var(--mono); font-size: 18px; font-weight: 600; color: var(--text); margin-bottom: 10px; }
+.card-price small { font-size: 11px; color: var(--muted); font-weight: 400; margin-left: 4px; }
+
+.score-bars { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin-bottom: 10px; }
+.score-item { text-align: center; }
+.score-label { font-size: 9px; color: var(--dim); font-family: var(--mono); letter-spacing: 0.05em; margin-bottom: 3px; }
+.score-bar { height: 3px; background: var(--border); border-radius: 2px; overflow: hidden; }
+.score-fill { height: 100%; border-radius: 2px; transition: width .4s; }
+.score-fill.vol { background: var(--accent); }
+.score-fill.mom { background: var(--yellow); }
+.score-fill.news { background: var(--green); }
+.score-val { font-family: var(--mono); font-size: 10px; color: var(--muted); margin-top: 2px; }
+
+.card-reason { font-size: 11px; color: var(--dim); line-height: 1.4; }
+.card-reason strong { color: var(--muted); }
+
+.conf-badge {
+  position: absolute; right: 12px; bottom: 12px;
+  font-family: var(--mono); font-size: 11px; font-weight: 600; color: var(--accent);
+}
+
+/* ── Breakout Row ── */
+.breakout-row {
+  display: flex; align-items: center; padding: 12px 14px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  margin-bottom: 8px; cursor: pointer; gap: 12px;
+}
+.breakout-row:active { background: var(--surface2); }
+.br-symbol { font-family: var(--mono); font-weight: 600; font-size: 14px; flex: 1; }
+.br-vol { font-family: var(--mono); font-size: 12px; color: var(--yellow); font-weight: 600; }
+.br-pct { font-family: var(--mono); font-size: 12px; font-weight: 600; }
+.br-pct.pos { color: var(--green); }
+.br-pct.neg { color: var(--red); }
+.vol-fire { font-size: 13px; }
+
+/* ── Filter chips ── */
+.filter-row { display: flex; gap: 8px; margin-bottom: 14px; overflow-x: auto; padding-bottom: 4px; }
+.filter-row::-webkit-scrollbar { display: none; }
+.chip {
+  padding: 5px 12px; border-radius: 20px; font-size: 11px; font-weight: 600; font-family: var(--mono);
+  border: 1px solid var(--border2); background: var(--surface); color: var(--muted);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.chip.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.chip:active { opacity: 0.7; }
+
+/* ── Screener ── */
+.screener-input {
+  width: 100%; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border2);
+  border-radius: 8px; color: var(--text); font-family: var(--mono); font-size: 13px;
+  margin-bottom: 12px; outline: none;
+}
+.screener-input:focus { border-color: var(--accent); }
+.screener-input::placeholder { color: var(--dim); }
+.slider-row { margin-bottom: 16px; }
+.slider-label { font-size: 11px; color: var(--muted); font-family: var(--mono); margin-bottom: 6px; display: flex; justify-content: space-between; }
+input[type=range] { width: 100%; accent-color: var(--accent); }
+.screener-results { margin-top: 4px; }
+
+/* ── Chart MFE ── */
+.chart-header { margin-bottom: 12px; }
+.chart-symbol-pick { display: flex; gap: 8px; overflow-x: auto; margin-bottom: 10px; }
+.chart-symbol-pick::-webkit-scrollbar { display: none; }
+.sym-pill {
+  padding: 6px 12px; border-radius: 20px; font-family: var(--mono); font-size: 12px; font-weight: 600;
+  border: 1px solid var(--border2); background: var(--surface); color: var(--muted);
+  cursor: pointer; white-space: nowrap; flex-shrink: 0;
+}
+.sym-pill.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.chart-wrap { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+.chart-title { font-family: var(--mono); font-size: 13px; font-weight: 600; margin-bottom: 2px; }
+.chart-sub { font-size: 11px; color: var(--muted); margin-bottom: 10px; }
+.interval-row { display: flex; gap: 6px; margin-bottom: 12px; }
+.int-btn { padding: 4px 10px; border-radius: 6px; font-family: var(--mono); font-size: 11px; font-weight: 600; border: 1px solid var(--border2); background: none; color: var(--muted); cursor: pointer; }
+.int-btn.active { background: var(--accent-bg); border-color: var(--accent); color: var(--accent); }
+.stats-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-top: 10px; }
+.stat { background: var(--surface2); border-radius: 6px; padding: 8px; text-align: center; }
+.stat-val { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.stat-lbl { font-size: 9px; color: var(--dim); margin-top: 2px; font-family: var(--mono); }
+
+/* ── Backtest ── */
+.bt-summary { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
+.bt-card { background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 14px; text-align: center; }
+.bt-val { font-family: var(--mono); font-size: 22px; font-weight: 700; margin-bottom: 4px; }
+.bt-lbl { font-size: 10px; color: var(--muted); font-family: var(--mono); letter-spacing: 0.05em; }
+
+/* ── Alerts ── */
+.alert-rule { display: flex; align-items: center; gap: 10px; padding: 12px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; }
+.alert-info { flex: 1; }
+.alert-sym { font-family: var(--mono); font-size: 13px; font-weight: 600; }
+.alert-detail { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.toggle { width: 36px; height: 20px; background: var(--border2); border-radius: 20px; position: relative; cursor: pointer; flex-shrink: 0; }
+.toggle.on { background: var(--green); }
+.toggle::after { content: ''; position: absolute; width: 16px; height: 16px; background: white; border-radius: 50%; top: 2px; left: 2px; transition: left .2s; }
+.toggle.on::after { left: 18px; }
+.add-alert-btn { width: 100%; padding: 12px; background: var(--accent-bg); border: 1px solid var(--accent); border-radius: 8px; color: var(--accent); font-family: var(--mono); font-size: 13px; font-weight: 600; cursor: pointer; margin-top: 12px; }
+.add-alert-btn:active { opacity: 0.7; }
+
+/* ── Empty state ── */
+.empty { text-align: center; padding: 48px 20px; color: var(--dim); }
+.empty-icon { font-size: 36px; margin-bottom: 10px; }
+.empty-text { font-size: 13px; font-family: var(--mono); }
+
+/* ── Loading skeleton ── */
+.skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface2) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 8px; }
+@keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+/* ── Toast ── */
+#toast { position: fixed; bottom: 70px; left: 50%; transform: translateX(-50%) translateY(20px); background: var(--surface2); border: 1px solid var(--border2); padding: 10px 18px; border-radius: 8px; font-size: 12px; font-family: var(--mono); color: var(--text); opacity: 0; transition: all .25s; pointer-events: none; white-space: nowrap; z-index: 100; }
+#toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+</style>
+</head>
+<body>
+<div id="app">
+
+  <!-- Top Nav -->
+  <div class="top-nav">
+    <div class="nav-brand">Stock<span>Pred</span></div>
+    <div class="nav-right">
+      <div class="nav-badge" id="market-status">● NSE OPEN</div>
+      <div class="nav-btn" onclick="showToast('Settings coming soon')">⚙</div>
+    </div>
+  </div>
+
+  <!-- Content -->
+  <div class="content-area">
+
+    <!-- ── MFE: Signals Feed ── -->
+    <div class="page active" id="page-signals">
+      <div class="section-header">
+        <span class="section-title">Breakouts Today</span>
+        <button class="refresh-btn" onclick="loadBreakouts()">↻ Refresh</button>
+      </div>
+      <div id="breakouts-list"></div>
+
+      <div class="section-header" style="margin-top:20px">
+        <span class="section-title">Top Signals</span>
+        <button class="refresh-btn" onclick="loadSignals()">↻ Refresh</button>
+      </div>
+      <div class="filter-row">
+        <div class="chip active" onclick="setDirFilter(null, this)">All</div>
+        <div class="chip" onclick="setDirFilter(1, this)">Buy</div>
+        <div class="chip" onclick="setDirFilter(-1, this)">Sell</div>
+        <div class="chip" onclick="setConfFilter(0.6, this)">High conf</div>
+        <div class="chip" onclick="setConfFilter(0.4, this)">All conf</div>
+      </div>
+      <div id="signals-list"></div>
+    </div>
+
+    <!-- ── MFE: Screener ── -->
+    <div class="page" id="page-screener">
+      <div class="section-header">
+        <span class="section-title">Screener</span>
+      </div>
+      <input class="screener-input" id="screener-search" placeholder="Search symbol..." oninput="filterScreener(this.value)">
+      <div class="slider-row">
+        <div class="slider-label">
+          <span>Min Volume Ratio</span>
+          <span id="vol-ratio-val" style="color:var(--accent)">2.0×</span>
+        </div>
+        <input type="range" min="1" max="5" step="0.5" value="2" oninput="updateVolRatio(this.value)">
+      </div>
+      <div class="slider-row">
+        <div class="slider-label">
+          <span>Min Confidence</span>
+          <span id="conf-val" style="color:var(--accent)">40%</span>
+        </div>
+        <input type="range" min="0" max="100" step="5" value="40" oninput="updateConf(this.value)">
+      </div>
+      <div class="filter-row">
+        <div class="chip active" onclick="setExchangeFilter('ALL', this)">All Markets</div>
+        <div class="chip" onclick="setExchangeFilter('NSE', this)">NSE</div>
+        <div class="chip" onclick="setExchangeFilter('NASDAQ', this)">US</div>
+      </div>
+      <div class="screener-results" id="screener-results"></div>
+    </div>
+
+    <!-- ── MFE: Chart ── -->
+    <div class="page" id="page-chart">
+      <div class="chart-symbol-pick" id="chart-symbols"></div>
+      <div class="interval-row">
+        <button class="int-btn active" onclick="setInterval('1d', this)">1D</button>
+        <button class="int-btn" onclick="setInterval('1wk', this)">1W</button>
+        <button class="int-btn" onclick="setInterval('1mo', this)">1M</button>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-title" id="chart-title">RELIANCE</div>
+        <div class="chart-sub" id="chart-sub">NSE · Loading...</div>
+        <canvas id="price-chart" height="200"></canvas>
+        <div class="stats-row">
+          <div class="stat"><div class="stat-val" id="stat-open">—</div><div class="stat-lbl">OPEN</div></div>
+          <div class="stat"><div class="stat-val" id="stat-high" style="color:var(--green)">—</div><div class="stat-lbl">HIGH</div></div>
+          <div class="stat"><div class="stat-val" id="stat-low" style="color:var(--red)">—</div><div class="stat-lbl">LOW</div></div>
+          <div class="stat"><div class="stat-val" id="stat-vol">—</div><div class="stat-lbl">VOL</div></div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-sub" style="margin-bottom:8px">Volume</div>
+        <canvas id="volume-chart" height="80"></canvas>
+      </div>
+    </div>
+
+    <!-- ── MFE: Backtest ── -->
+    <div class="page" id="page-backtest">
+      <div class="section-header">
+        <span class="section-title">Signal Performance</span>
+      </div>
+      <div class="bt-summary">
+        <div class="bt-card">
+          <div class="bt-val" style="color:var(--green)" id="bt-winrate">62%</div>
+          <div class="bt-lbl">WIN RATE</div>
+        </div>
+        <div class="bt-card">
+          <div class="bt-val" style="color:var(--accent)" id="bt-signals">—</div>
+          <div class="bt-lbl">SIGNALS</div>
+        </div>
+        <div class="bt-card">
+          <div class="bt-val" style="color:var(--yellow)" id="bt-avgret">—</div>
+          <div class="bt-lbl">AVG 5D RETURN</div>
+        </div>
+        <div class="bt-card">
+          <div class="bt-val" id="bt-accuracy">—</div>
+          <div class="bt-lbl">BUY ACCURACY</div>
+        </div>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-sub" style="margin-bottom:8px">Cumulative Signal P&amp;L</div>
+        <canvas id="bt-chart" height="160"></canvas>
+      </div>
+      <div class="chart-wrap">
+        <div class="chart-sub" style="margin-bottom:8px">Confidence vs Accuracy</div>
+        <canvas id="conf-chart" height="130"></canvas>
+      </div>
+    </div>
+
+    <!-- ── MFE: Alerts ── -->
+    <div class="page" id="page-alerts">
+      <div class="section-header">
+        <span class="section-title">Alert Rules</span>
+      </div>
+      <div id="alerts-list"></div>
+      <button class="add-alert-btn" onclick="showToast('Alert creation — connect backend')">+ Add Alert Rule</button>
+      <div style="margin-top:20px">
+        <div class="section-header"><span class="section-title">Channels</span></div>
+        <div class="alert-rule">
+          <div class="alert-info">
+            <div class="alert-sym">📱 Telegram</div>
+            <div class="alert-detail">Instant push per signal</div>
+          </div>
+          <div class="toggle on" id="tg-toggle" onclick="toggleAlert('tg-toggle')"></div>
+        </div>
+        <div class="alert-rule">
+          <div class="alert-info">
+            <div class="alert-sym">📧 Email Digest</div>
+            <div class="alert-detail">Top 5 signals at 17:30 IST</div>
+          </div>
+          <div class="toggle" id="em-toggle" onclick="toggleAlert('em-toggle')"></div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <!-- Bottom Tab Bar -->
+  <div class="tab-bar">
+    <button class="tab-btn active" onclick="goTo('signals', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg>
+      <span class="tab-label">Signals</span>
+    </button>
+    <button class="tab-btn" onclick="goTo('screener', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      <span class="tab-label">Screener</span>
+    </button>
+    <button class="tab-btn" onclick="goTo('chart', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><polyline points="3 9 9 9 12 6 15 12 18 9 21 9"/></svg>
+      <span class="tab-label">Chart</span>
+    </button>
+    <button class="tab-btn" onclick="goTo('backtest', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10"/><path d="M12 20V4"/><path d="M6 20v-6"/></svg>
+      <span class="tab-label">Backtest</span>
+    </button>
+    <button class="tab-btn" onclick="goTo('alerts', this)">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+      <span class="tab-label">Alerts</span>
+    </button>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+// ── State ─────────────────────────────────────────────────────────────────────
+const API = 'http://localhost:8000'
+let state = {
+  signals: [], breakouts: [], dirFilter: null, confFilter: 0.4,
+  exchFilter: 'ALL', volRatio: 2.0, activeSymbol: 'RELIANCE',
+  activeExchange: 'NSE', priceChart: null, volChart: null,
+  btChart: null, confChart: null,
+}
+
+// ── Mock data (replace with real API calls once backend is running) ───────────
+const MOCK_SIGNALS = [
+  { symbol:'RELIANCE', exchange:'NSE', direction:1, confidence:0.81, volume_score:0.72, momentum_score:0.79, news_score:0.55, reasons:['Extreme volume surge 3.2x avg','MACD bullish crossover','EMA20 crossed above EMA50 (golden cross)','Positive news sentiment (3 of 4 articles bullish)'], price:2847.50, volume_ratio:3.2 },
+  { symbol:'TATASTEEL', exchange:'NSE', direction:1, confidence:0.74, volume_score:0.85, momentum_score:0.61, news_score:0.42, reasons:['High volume surge 2.8x avg','RSI bullish range (54.2)','OBV rising (accumulation)'], price:148.30, volume_ratio:2.8 },
+  { symbol:'NVDA', exchange:'NASDAQ', direction:1, confidence:0.88, volume_score:0.90, momentum_score:0.83, news_score:0.78, reasons:['Extreme volume surge 4.1x avg','Strong 10d momentum +8.3%','Positive news sentiment (5 of 5 articles bullish)','Strong trend (ADX 32)'], price:134.52, volume_ratio:4.1 },
+  { symbol:'INFY', exchange:'NSE', direction:-1, confidence:0.65, volume_score:0.70, momentum_score:0.60, news_score:0.35, reasons:['High-volume sell-off — caution','MACD bearish crossover','Negative news sentiment (2 of 3 articles bearish)'], price:1623.40, volume_ratio:2.4 },
+  { symbol:'HDFCBANK', exchange:'NSE', direction:1, confidence:0.58, volume_score:0.52, momentum_score:0.63, news_score:0.41, reasons:['Above-avg volume 1.8x','Price above EMA20','RSI bullish range (52.1)'], price:1721.85, volume_ratio:1.8 },
+  { symbol:'AMD', exchange:'NASDAQ', direction:1, confidence:0.71, volume_score:0.68, momentum_score:0.74, news_score:0.52, reasons:['High volume surge 2.2x avg','MACD histogram positive','Strong 10d momentum +6.1%'], price:142.30, volume_ratio:2.2 },
+]
+
+const MOCK_BREAKOUTS = [
+  { symbol:'RELIANCE', exchange:'NSE', volume_ratio:3.2, close:2847.50, pct_change:2.4 },
+  { symbol:'NVDA', exchange:'NASDAQ', volume_ratio:4.1, close:134.52, pct_change:5.8 },
+  { symbol:'TATASTEEL', exchange:'NSE', volume_ratio:2.8, close:148.30, pct_change:1.9 },
+  { symbol:'INFY', exchange:'NSE', volume_ratio:2.4, close:1623.40, pct_change:-2.1 },
+  { symbol:'AMD', exchange:'NASDAQ', volume_ratio:2.2, close:142.30, pct_change:3.3 },
+]
+
+const WATCHLIST = ['RELIANCE','TCS','INFY','NVDA','AMD','HDFCBANK','TATASTEEL']
+
+// ── Navigation ────────────────────────────────────────────────────────────────
+function goTo(page, btn) {
+  document.querySelectorAll('.page').forEach(p => p.classList.remove('active'))
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'))
+  document.getElementById('page-' + page).classList.add('active')
+  btn.classList.add('active')
+  if (page === 'chart') initCharts()
+  if (page === 'backtest') initBacktest()
+  if (page === 'screener') renderScreener()
+  if (page === 'alerts') renderAlerts()
+}
+
+// ── Signals MFE ───────────────────────────────────────────────────────────────
+function loadBreakouts() {
+  const list = document.getElementById('breakouts-list')
+  list.innerHTML = MOCK_BREAKOUTS.map(b => {
+    const fires = '🔥'.repeat(Math.min(5, Math.floor(b.volume_ratio)))
+    const posNeg = b.pct_change >= 0 ? 'pos' : 'neg'
+    const sign = b.pct_change >= 0 ? '+' : ''
+    return `<div class="breakout-row" onclick="openChart('${b.symbol}','${b.exchange}')">
+      <div class="br-symbol">${b.symbol} <span style="font-size:10px;color:var(--dim)">${b.exchange}</span></div>
+      <div class="br-vol">${b.volume_ratio.toFixed(1)}× <span class="vol-fire">${fires}</span></div>
+      <div class="br-pct ${posNeg}">${sign}${b.pct_change}%</div>
+    </div>`
+  }).join('')
+}
+
+function loadSignals() {
+  state.signals = MOCK_SIGNALS
+  renderSignals()
+}
+
+function renderSignals() {
+  let filtered = state.signals.filter(s => s.confidence >= state.confFilter)
+  if (state.dirFilter !== null) filtered = filtered.filter(s => s.direction === state.dirFilter)
+  const list = document.getElementById('signals-list')
+  if (!filtered.length) {
+    list.innerHTML = '<div class="empty"><div class="empty-icon">📭</div><div class="empty-text">No signals match your filters</div></div>'
+    return
+  }
+  list.innerHTML = filtered.map(s => {
+    const dir = s.direction === 1 ? 'BUY' : 'SELL'
+    const dirClass = s.direction === 1 ? 'buy' : 'sell'
+    const reason = s.reasons[0] || ''
+    const vPct = Math.abs(s.volume_score) * 100
+    const mPct = Math.abs(s.momentum_score) * 100
+    const nPct = (s.news_score + 1) / 2 * 100
+    const exch = s.exchange === 'NSE' ? '₹' : '$'
+    return `<div class="signal-card ${dirClass}" onclick="openChart('${s.symbol}','${s.exchange}')">
+      <div class="card-top">
+        <div><span class="card-symbol">${s.symbol}</span><span class="card-exchange">${s.exchange}</span></div>
+        <div class="card-dir ${dirClass}">${dir}</div>
+      </div>
+      <div class="card-price">${exch}${s.price.toLocaleString('en-IN', {minimumFractionDigits:2})} <small>${s.volume_ratio}× vol</small></div>
+      <div class="score-bars">
+        <div class="score-item"><div class="score-label">VOLUME</div><div class="score-bar"><div class="score-fill vol" style="width:${vPct}%"></div></div><div class="score-val">${(s.volume_score*100).toFixed(0)}%</div></div>
+        <div class="score-item"><div class="score-label">MOMENTUM</div><div class="score-bar"><div class="score-fill mom" style="width:${mPct}%"></div></div><div class="score-val">${(s.momentum_score*100).toFixed(0)}%</div></div>
+        <div class="score-item"><div class="score-label">NEWS</div><div class="score-bar"><div class="score-fill news" style="width:${nPct}%"></div></div><div class="score-val">${((s.news_score+1)/2*100).toFixed(0)}%</div></div>
+      </div>
+      <div class="card-reason"><strong>Why:</strong> ${reason}</div>
+      <div class="conf-badge">${(s.confidence*100).toFixed(0)}%</div>
+    </div>`
+  }).join('')
+}
+
+function setDirFilter(dir, el) {
+  document.querySelectorAll('#page-signals .filter-row .chip').forEach(c => c.classList.remove('active'))
+  el.classList.add('active')
+  state.dirFilter = dir
+  renderSignals()
+}
+
+function setConfFilter(conf, el) {
+  state.confFilter = conf
+  renderSignals()
+}
+
+// ── Chart MFE ─────────────────────────────────────────────────────────────────
+function buildChartSymbols() {
+  const wrap = document.getElementById('chart-symbols')
+  wrap.innerHTML = WATCHLIST.map(s =>
+    `<div class="sym-pill ${s === state.activeSymbol ? 'active' : ''}" onclick="switchSymbol('${s}')">${s}</div>`
+  ).join('')
+}
+
+function switchSymbol(sym) {
+  state.activeSymbol = sym
+  document.querySelectorAll('.sym-pill').forEach(p => p.classList.toggle('active', p.textContent === sym))
+  document.getElementById('chart-title').textContent = sym
+  drawMockChart()
+}
+
+function openChart(sym, exch) {
+  state.activeSymbol = sym
+  state.activeExchange = exch
+  document.querySelector('[onclick="goTo(\'chart\', this)"]').click()
+}
+
+function setInterval(intv, btn) {
+  document.querySelectorAll('.int-btn').forEach(b => b.classList.remove('active'))
+  btn.classList.add('active')
+  drawMockChart()
+}
+
+function generateMockPrices(base, n, vol) {
+  const prices = [base]
+  for (let i = 1; i < n; i++) {
+    const change = (Math.random() - 0.48) * vol
+    prices.push(Math.max(base * 0.7, prices[i-1] * (1 + change/100)))
+  }
+  return prices
+}
+
+function drawMockChart() {
+  const sym = state.activeSymbol
+  const prices = generateMockPrices(sym === 'NVDA' ? 134 : sym === 'AMD' ? 142 : 2847, 60, 1.8)
+  const labels = Array.from({length: 60}, (_, i) => {
+    const d = new Date(); d.setDate(d.getDate() - (59 - i))
+    return d.toLocaleDateString('en-IN', {day:'2-digit', month:'short'})
+  })
+  const volumes = Array.from({length: 60}, () => Math.floor(Math.random() * 1e7 + 5e6))
+
+  document.getElementById('chart-sub').textContent = `${state.activeExchange} · Last 60 sessions`
+  const last = prices[prices.length-1]
+  const prev = prices[prices.length-2]
+  const chg = ((last - prev) / prev * 100).toFixed(2)
+  document.getElementById('stat-open').textContent = prices[prices.length-1].toFixed(2)
+  document.getElementById('stat-high').textContent = Math.max(...prices.slice(-5)).toFixed(2)
+  document.getElementById('stat-low').textContent = Math.min(...prices.slice(-5)).toFixed(2)
+  document.getElementById('stat-vol').textContent = (volumes[59]/1e6).toFixed(1)+'M'
+
+  const color = parseFloat(chg) >= 0 ? '#3FB950' : '#F85149'
+
+  if (state.priceChart) state.priceChart.destroy()
+  const pCtx = document.getElementById('price-chart').getContext('2d')
+  state.priceChart = new Chart(pCtx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: prices, borderColor: color, borderWidth: 1.5,
+        pointRadius: 0, fill: true,
+        backgroundColor: (ctx) => {
+          const g = ctx.chart.ctx.createLinearGradient(0, 0, 0, 200)
+          g.addColorStop(0, color + '33'); g.addColorStop(1, color + '00')
+          return g
+        },
+        tension: 0.3,
+      }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: {
+      x: { display: false }, y: { grid: { color: '#21262D' }, ticks: { color: '#8B949E', font: { size: 10, family: 'JetBrains Mono' } } }
+    }}
+  })
+
+  if (state.volChart) state.volChart.destroy()
+  const vCtx = document.getElementById('volume-chart').getContext('2d')
+  const avgVol = volumes.slice(0, -1).reduce((a,b) => a+b) / 59
+  state.volChart = new Chart(vCtx, {
+    type: 'bar',
+    data: { labels, datasets: [{ data: volumes, backgroundColor: volumes.map(v => v > avgVol * 2 ? '#E3B341cc' : '#58A6FF44'), borderWidth: 0 }] },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: {
+      x: { display: false }, y: { display: false }
+    }}
+  })
+}
+
+function initCharts() {
+  buildChartSymbols()
+  drawMockChart()
+}
+
+// ── Screener MFE ──────────────────────────────────────────────────────────────
+function renderScreener(query = '') {
+  let items = MOCK_SIGNALS.filter(s => {
+    const matchSym = !query || s.symbol.includes(query.toUpperCase())
+    const matchExch = state.exchFilter === 'ALL' || s.exchange === state.exchFilter
+    const matchConf = s.confidence >= state.confFilter
+    const matchVol = s.volume_ratio >= state.volRatio
+    return matchSym && matchExch && matchConf && matchVol
+  })
+  const wrap = document.getElementById('screener-results')
+  if (!items.length) {
+    wrap.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-text">No results</div></div>'
+    return
+  }
+  wrap.innerHTML = items.map(s => {
+    const dir = s.direction === 1 ? '🟢 BUY' : '🔴 SELL'
+    return `<div class="breakout-row" onclick="openChart('${s.symbol}','${s.exchange}')">
+      <div style="flex:1"><div class="br-symbol">${s.symbol} <span style="font-size:10px;color:var(--dim)">${s.exchange}</span></div>
+      <div style="font-size:11px;color:var(--dim);margin-top:2px">${dir} · ${(s.confidence*100).toFixed(0)}% conf</div></div>
+      <div class="br-vol">${s.volume_ratio.toFixed(1)}×</div>
+    </div>`
+  }).join('')
+}
+
+function filterScreener(val) { renderScreener(val) }
+function updateVolRatio(v) { state.volRatio = parseFloat(v); document.getElementById('vol-ratio-val').textContent = v + '×'; renderScreener() }
+function updateConf(v) { state.confFilter = v/100; document.getElementById('conf-val').textContent = v + '%'; renderScreener() }
+function setExchangeFilter(exch, el) {
+  state.exchFilter = exch
+  document.querySelectorAll('#page-screener .filter-row .chip').forEach(c => c.classList.remove('active'))
+  el.classList.add('active')
+  renderScreener()
+}
+
+// ── Backtest MFE ──────────────────────────────────────────────────────────────
+function initBacktest() {
+  document.getElementById('bt-winrate').textContent = '62%'
+  document.getElementById('bt-signals').textContent = '48'
+  document.getElementById('bt-avgret').textContent = '+2.8%'
+  document.getElementById('bt-accuracy').textContent = '71%'
+
+  if (state.btChart) state.btChart.destroy()
+  const pnl = [0]; let cum = 0
+  for (let i = 0; i < 47; i++) {
+    cum += (Math.random() > 0.38 ? 1 : -1) * (Math.random() * 2.5)
+    pnl.push(parseFloat(cum.toFixed(2)))
+  }
+  const btCtx = document.getElementById('bt-chart').getContext('2d')
+  state.btChart = new Chart(btCtx, {
+    type: 'line',
+    data: { labels: Array.from({length:48},(_,i)=>i+1), datasets: [{
+      data: pnl, borderColor: '#3FB950', borderWidth: 1.5, pointRadius: 0,
+      fill: true, backgroundColor: '#3FB95018', tension: 0.3
+    }]},
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: {
+      x: { display: false }, y: { grid: { color: '#21262D' }, ticks: { color: '#8B949E', font: { size: 10 } } }
+    }}
+  })
+
+  if (state.confChart) state.confChart.destroy()
+  const confCtx = document.getElementById('conf-chart').getContext('2d')
+  state.confChart = new Chart(confCtx, {
+    type: 'bar',
+    data: {
+      labels: ['40–50%','50–60%','60–70%','70–80%','80%+'],
+      datasets: [{ label:'Accuracy', data:[48,55,64,72,81], backgroundColor:'#58A6FF88' }]
+    },
+    options: { responsive: true, plugins: { legend: { display: false } }, scales: {
+      x: { ticks: { color: '#8B949E', font: { size: 10 } } },
+      y: { max: 100, grid: { color: '#21262D' }, ticks: { color: '#8B949E', font: { size: 10 }, callback: v => v + '%' } }
+    }}
+  })
+}
+
+// ── Alerts MFE ────────────────────────────────────────────────────────────────
+function renderAlerts() {
+  const mockAlerts = [
+    { symbol:'RELIANCE', exchange:'NSE', dir:'BUY', conf:60, channel:'Telegram', active:true },
+    { symbol:'NVDA', exchange:'NASDAQ', dir:'Any', conf:70, channel:'Email', active:false },
+    { symbol:'TATASTEEL', exchange:'NSE', dir:'BUY', conf:50, channel:'Telegram', active:true },
+  ]
+  document.getElementById('alerts-list').innerHTML = mockAlerts.map((a, i) =>
+    `<div class="alert-rule">
+      <div class="alert-info">
+        <div class="alert-sym">${a.symbol} <span style="font-size:10px;color:var(--dim)">${a.exchange}</span></div>
+        <div class="alert-detail">${a.dir} · ≥${a.conf}% · ${a.channel}</div>
+      </div>
+      <div class="toggle ${a.active ? 'on' : ''}" id="alert-${i}" onclick="toggleAlert('alert-${i}')"></div>
+    </div>`
+  ).join('')
+}
+
+function toggleAlert(id) {
+  const el = document.getElementById(id)
+  el.classList.toggle('on')
+}
+
+// ── Toast ─────────────────────────────────────────────────────────────────────
+function showToast(msg) {
+  const t = document.getElementById('toast')
+  t.textContent = msg
+  t.classList.add('show')
+  setTimeout(() => t.classList.remove('show'), 2000)
+}
+
+// ── Market status ─────────────────────────────────────────────────────────────
+function updateMarketStatus() {
+  const now = new Date()
+  const h = now.getUTCHours() * 60 + now.getUTCMinutes() + 330  // IST offset
+  const ish = h % 1440
+  const badge = document.getElementById('market-status')
+  if (ish >= 555 && ish <= 930) {
+    badge.textContent = '● NSE OPEN'
+    badge.style.background = 'var(--green-bg)'
+    badge.style.color = 'var(--green)'
+  } else {
+    badge.textContent = '● NSE CLOSED'
+    badge.style.background = 'var(--border)'
+    badge.style.color = 'var(--muted)'
+  }
+}
+
+// ── Init ──────────────────────────────────────────────────────────────────────
+loadBreakouts()
+loadSignals()
+renderScreener()
+updateMarketStatus()
+setInterval(updateMarketStatus, 60000)
+</script>
+</body>
+</html>
