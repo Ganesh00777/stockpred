@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 
 async def main():
-    from app.db.database import async_session
+    from app.db.database import AsyncSessionLocal as async_session
     from app.db.models import Candle
     from app.services.data_fetcher import fetch_all_ohlcv
     from sqlalchemy.dialects.postgresql import insert as pg_insert
