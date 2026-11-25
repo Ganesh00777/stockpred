@@ -4,12 +4,14 @@ from app.core.config import settings
 from app.db.models import Base
 
 # Async engine for FastAPI
-async_engine = create_async_engine(
+async_engine = create_async_engine(  # also exported as `engine` for compat
     settings.DATABASE_URL,
     pool_size=10,
     max_overflow=20,
     echo=settings.APP_ENV == "development",
 )
+
+engine = async_engine  # alias for backwards compat
 
 AsyncSessionLocal = async_sessionmaker(
     async_engine,
