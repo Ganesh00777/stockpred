@@ -74,7 +74,8 @@ def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
         
         url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": f"{symbol}/NSE",
+            "symbol": symbol,
+            "exchange": "NSE",
             "interval": "1day",
             "outputsize": outputsize,
             "apikey": api_key,
