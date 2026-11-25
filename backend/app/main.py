@@ -45,14 +45,14 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("Kite ticker start error: %s", e)
 
-    # 4. Warm up FinBERT model in background (so first request isn't slow)
-    try:
-        import threading
-        from app.ml.sentiment import load_finbert
-        threading.Thread(target=load_finbert, daemon=True).start()
-        logger.info("FinBERT warmup started in background ✅")
-    except Exception as e:
-        logger.warning("FinBERT warmup error: %s", e)
+    # 4. FinBERT loads lazily on first use (disabled warmup due to 1GB RAM limit)
+    # try:
+    #     import threading
+    #     from app.ml.sentiment import load_finbert
+    #     threading.Thread(target=load_finbert, daemon=True).start()
+    #     logger.info("FinBERT warmup started in background ✅")
+    # except Exception as e:
+    #     logger.warning("FinBERT warmup error: %s", e)
 
     # 5. Start APScheduler
     setup_scheduler()
