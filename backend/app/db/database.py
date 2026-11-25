@@ -10,6 +10,7 @@ async_engine = create_async_engine(
     max_overflow=20,
     echo=settings.APP_ENV == "development",
     connect_args={"statement_cache_size": 0},
+    execution_options={"compiled_cache": None},
 )
 
 engine = async_engine  # alias for backwards compat
