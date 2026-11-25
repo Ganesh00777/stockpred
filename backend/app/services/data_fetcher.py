@@ -16,6 +16,11 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# In-memory cache for volume surge candidates
+_CANDIDATES_CACHE: Optional[List[dict]] = None
+_CANDIDATES_CACHE_TIME = 0.0
+_CANDIDATES_CACHE_TTL = 3600  # 1 hour
+
 # Browser-like headers to avoid Yahoo blocking datacenter IPs
 _HEADERS = {
     "User-Agent": (
@@ -69,7 +74,7 @@ def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
         
         url = "https://api.twelvedata.com/time_series"
         params = {
-            "symbol": f"{symbol}:NSE",
+            "symbol": f"{symbol}/NSE",
             "interval": "1day",
             "outputsize": outputsize,
             "apikey": api_key,
@@ -178,11 +183,9 @@ def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
     return result
 
 
-def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
-    """
-    Returns stocks where today's volume >= min_ratio * 20d avg volume.
-    This is the primary breakout screen.
-    """
+def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
+    """Fetch and cache volume surge candidates."""
+    global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
     candidates = []
     all_symbols = [(s, "NSE") for s in NSE_WATCHLIST] + [(s, "NASDAQ") for s in US_WATCHLIST]
 
@@ -212,4 +215,21 @@ def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
                 ),
             })
 
-    return sorted(candidates, key=lambda x: x["volume_ratio"], reverse=True)
+    _CANDIDATES_CACHE = sorted(candidates, key=lambda x: x["volume_ratio"], reverse=True)
+    _CANDIDATES_CACHE_TIME = time.time()
+    return _CANDIDATES_CACHE
+
+
+def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
+    """
+    Returns stocks where today's volume >= min_ratio * 20d avg volume.
+    Uses cached results (1-hour TTL) to avoid excessive API calls.
+    """
+    global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
+
+    now = time.time()
+    if _CANDIDATES_CACHE is not None and (now - _CANDIDATES_CACHE_TIME) < _CANDIDATES_CACHE_TTL:
+        return _CANDIDATES_CACHE
+
+    logger.info("Refreshing volume surge candidates cache...")
+    return _refresh_candidates_cache(min_ratio)
