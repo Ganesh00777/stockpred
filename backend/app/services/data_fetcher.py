@@ -56,42 +56,80 @@ def _yf_symbol(symbol: str, exchange: str) -> str:
     return f"{symbol}.NS" if exchange == "NSE" else symbol
 
 
+def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
+    """Fetch NSE OHLCV from NSE India API — works from Railway."""
+    try:
+        session = _make_session()
+        session.headers.update({
+            "Referer": "https://www.nseindia.com",
+            "X-Requested-With": "XMLHttpRequest",
+        })
+        # Get cookies first
+        session.get("https://www.nseindia.com", timeout=10)
+        
+        period_map = {"3mo": "3M", "6mo": "6M", "1y": "1Y", "2y": "2Y"}
+        nse_period = period_map.get(period, "1Y")
+        url = f"https://www.nseindia.com/api/historical/cm/equity?symbol={symbol}&series=[%22EQ%22]&dataType=priceVolumeDeliverable&duration={nse_period}"
+        resp = session.get(url, timeout=15)
+        resp.raise_for_status()
+        data = resp.json().get("data", [])
+        if not data:
+            return None
+        rows = []
+        for d in data:
+            rows.append({
+                "ts": pd.to_datetime(d["CH_TIMESTAMP"]),
+                "open": float(d["CH_OPENING_PRICE"]),
+                "high": float(d["CH_TRADE_HIGH_PRICE"]),
+                "low": float(d["CH_TRADE_LOW_PRICE"]),
+                "close": float(d["CH_CLOSING_PRICE"]),
+                "volume": int(d["CH_TOT_TRADED_QTY"]),
+                "symbol": symbol,
+                "exchange": "NSE",
+                "interval": "1d",
+            })
+        df = pd.DataFrame(rows)
+        df = df.sort_values("ts").reset_index(drop=True)
+        return df
+    except Exception as e:
+        logger.warning("NSE API failed for %s: %s", symbol, e)
+        return None
+
+
 def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV data from yfinance with browser session to avoid IP blocks.
-    Returns DataFrame with columns: ts, open, high, low, close, volume, symbol, exchange, interval
+    Fetch OHLCV — NSE India API for NSE stocks, yfinance for US stocks.
     """
-    ticker_sym = _yf_symbol(symbol, exchange)
-    # Small random delay to avoid burst rate limiting
-    time.sleep(random.uniform(1.0, 3.0))
+    if exchange == "NSE":
+        df = _fetch_nse_ohlcv(symbol, period)
+        if df is not None:
+            return df
+        logger.warning("NSE API failed for %s, skipping", symbol)
+        return None
 
+    # US stocks — yfinance
+    ticker_sym = _yf_symbol(symbol, exchange)
+    time.sleep(random.uniform(0.5, 1.5))
     try:
         session = _make_session()
         ticker = yf.Ticker(ticker_sym, session=session)
         df = ticker.history(period=period, interval=interval, auto_adjust=True)
-
         if df.empty:
             logger.warning("No data returned for %s", ticker_sym)
             return None
-
         df = df.reset_index()
         df.columns = [c.lower() for c in df.columns]
         df = df.rename(columns={"date": "ts", "datetime": "ts"})
         df["symbol"] = symbol
         df["exchange"] = exchange
         df["interval"] = interval
-        df = df[["ts", "symbol", "exchange", "interval",
-                  "open", "high", "low", "close", "volume"]]
-        # Strip timezone from ts for DB compatibility
+        df = df[["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]]
         if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
             df["ts"] = df["ts"].dt.tz_localize(None)
-        df = df.dropna()
-        return df
-
+        return df.dropna()
     except Exception as e:
         logger.error("Error fetching %s: %s", ticker_sym, e)
         return None
-
 
 def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
     """Fetch OHLCV for all watchlist stocks via yfinance with browser session."""
