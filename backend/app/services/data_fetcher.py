@@ -57,43 +57,29 @@ def _yf_symbol(symbol: str, exchange: str) -> str:
 
 
 def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
-    """Fetch NSE OHLCV from NSE India API — works from Railway."""
-    try:
-        session = _make_session()
-        session.headers.update({
-            "Referer": "https://www.nseindia.com",
-            "X-Requested-With": "XMLHttpRequest",
-        })
-        # Get cookies first
-        session.get("https://www.nseindia.com", timeout=10)
-        
-        period_map = {"3mo": "3M", "6mo": "6M", "1y": "1Y", "2y": "2Y"}
-        nse_period = period_map.get(period, "1Y")
-        url = f"https://www.nseindia.com/api/historical/cm/equity?symbol={symbol}&series=[%22EQ%22]&dataType=priceVolumeDeliverable&duration={nse_period}"
-        resp = session.get(url, timeout=15)
-        resp.raise_for_status()
-        data = resp.json().get("data", [])
-        if not data:
-            return None
-        rows = []
-        for d in data:
-            rows.append({
-                "ts": pd.to_datetime(d["CH_TIMESTAMP"]),
-                "open": float(d["CH_OPENING_PRICE"]),
-                "high": float(d["CH_TRADE_HIGH_PRICE"]),
-                "low": float(d["CH_TRADE_LOW_PRICE"]),
-                "close": float(d["CH_CLOSING_PRICE"]),
-                "volume": int(d["CH_TOT_TRADED_QTY"]),
-                "symbol": symbol,
-                "exchange": "NSE",
-                "interval": "1d",
-            })
-        df = pd.DataFrame(rows)
-        df = df.sort_values("ts").reset_index(drop=True)
-        return df
-    except Exception as e:
-        logger.warning("NSE API failed for %s: %s", symbol, e)
-        return None
+    """Fetch NSE OHLCV via yfinance .NS suffix with retry."""
+    ticker_sym = f"{symbol}.NS"
+    for attempt in range(3):
+        try:
+            time.sleep(random.uniform(1, 3))
+            session = _make_session()
+            ticker = yf.Ticker(ticker_sym, session=session)
+            df = ticker.history(period=period, interval="1d", auto_adjust=True)
+            if df.empty:
+                continue
+            df = df.reset_index()
+            df.columns = [c.lower() for c in df.columns]
+            df = df.rename(columns={"date": "ts", "datetime": "ts"})
+            df["symbol"] = symbol
+            df["exchange"] = "NSE"
+            df["interval"] = "1d"
+            df = df[["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]]
+            if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
+                df["ts"] = df["ts"].dt.tz_localize(None)
+            return df.dropna()
+        except Exception as e:
+            logger.warning("yfinance attempt %d failed for %s: %s", attempt+1, ticker_sym, e)
+    return None
 
 
 def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
