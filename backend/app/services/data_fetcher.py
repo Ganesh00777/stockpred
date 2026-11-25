@@ -1,13 +1,13 @@
 """
 Data ingestion: market OHLCV + volume data.
-Uses yfinance for both NSE (.NS suffix) and US stocks — works from Railway.
-Per-symbol in-memory cache with 1-hour TTL to avoid rate limits.
+Uses yfinance batch download to fetch all symbols in one HTTP call per group —
+avoids per-symbol rate limiting that blocks Railway datacenter IPs.
+Per-group in-memory cache with 1-hour TTL.
 """
 import logging
 import time
-import random
 import threading
-from typing import List, Optional
+from typing import List, Optional, Dict
 
 import pandas as pd
 import requests
@@ -18,10 +18,10 @@ from app.core.config import settings
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Per-symbol OHLCV cache  (key → (DataFrame, timestamp))
+# In-memory cache  (key → (DataFrame, timestamp))
 # ---------------------------------------------------------------------------
 _cache_lock = threading.Lock()
-_ohlcv_cache: dict = {}
+_ohlcv_cache: Dict[str, tuple] = {}
 _CACHE_TTL = 3600  # 1 hour
 
 
@@ -34,12 +34,12 @@ def _cache_get(key: str) -> Optional[pd.DataFrame]:
         if time.time() - ts > _CACHE_TTL:
             del _ohlcv_cache[key]
             return None
-        return df
+        return df.copy()
 
 
 def _cache_set(key: str, df: pd.DataFrame) -> None:
     with _cache_lock:
-        _ohlcv_cache[key] = (df, time.time())
+        _ohlcv_cache[key] = (df.copy(), time.time())
 
 
 # ---------------------------------------------------------------------------
@@ -61,120 +61,176 @@ US_WATCHLIST = [
     "AMZN", "TSLA", "AMD", "NFLX", "PLTR",
 ]
 
-# ---------------------------------------------------------------------------
-# Browser-like session to reduce Yahoo Finance blocking
-# ---------------------------------------------------------------------------
-_HEADERS = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/120.0.0.0 Safari/537.36"
-    ),
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Accept-Language": "en-US,en;q=0.5",
-}
-
-
-def _make_session() -> requests.Session:
-    session = requests.Session()
-    session.headers.update(_HEADERS)
-    return session
-
+# yfinance tickers for NSE
+NSE_TICKERS = [f"{s}.NS" for s in NSE_WATCHLIST]
+US_TICKERS = list(US_WATCHLIST)
 
 # ---------------------------------------------------------------------------
-# Core yfinance fetch (NSE and US)
+# Batch download via yf.download()
+# Fetches all symbols in ONE HTTP request — avoids per-IP rate limits
 # ---------------------------------------------------------------------------
-def _fetch_yfinance(ticker_sym: str, symbol: str, exchange: str,
-                    period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV via yfinance. Works for both .NS (NSE) and plain US tickers."""
-    time.sleep(random.uniform(0.3, 0.8))
+
+def _batch_download(tickers: List[str], period: str = "3mo") -> pd.DataFrame:
+    """
+    Download OHLCV for all tickers in one batch call.
+    Returns a flat DataFrame with columns: ts, symbol, exchange, interval,
+    open, high, low, close, volume.
+    """
     try:
-        session = _make_session()
-        ticker = yf.Ticker(ticker_sym, session=session)
-        df = ticker.history(period=period, interval=interval, auto_adjust=True)
-        if df.empty:
-            logger.warning("No data returned for %s", ticker_sym)
-            return None
-        df = df.reset_index()
-        df.columns = [c.lower() for c in df.columns]
-        df = df.rename(columns={"date": "ts", "datetime": "ts"})
-        df["symbol"] = symbol
-        df["exchange"] = exchange
-        df["interval"] = interval
-        df = df[["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]]
-        # Strip timezone info
-        if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
-            df["ts"] = df["ts"].dt.tz_localize(None)
-        return df.dropna()
+        raw = yf.download(
+            tickers=tickers,
+            period=period,
+            interval="1d",
+            auto_adjust=True,
+            group_by="ticker",
+            threads=True,
+            progress=False,
+        )
+        if raw is None or raw.empty:
+            logger.warning("yf.download returned empty for %s tickers", len(tickers))
+            return pd.DataFrame()
+        return raw
     except Exception as e:
-        logger.error("yfinance failed for %s: %s", ticker_sym, e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# Public fetch functions
-# ---------------------------------------------------------------------------
-def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV. NSE → yfinance with .NS suffix. US → yfinance plain."""
-    if exchange == "NSE":
-        ticker_sym = f"{symbol}.NS"
-    else:
-        ticker_sym = symbol
-    return _fetch_yfinance(ticker_sym, symbol, exchange, period, interval)
-
-
-def _cached_fetch_ohlcv(symbol: str, exchange: str, period: str = "3mo") -> Optional[pd.DataFrame]:
-    """
-    Fetch with 1-hour in-memory cache.
-    Returns cached data if fresh; otherwise fetches from Yahoo Finance.
-    Small random delay to avoid hammering Yahoo on cold start.
-    """
-    cache_key = f"{symbol}:{exchange}:{period}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        logger.debug("Cache hit for %s", cache_key)
-        return cached
-
-    df = fetch_ohlcv(symbol, exchange, period=period)
-    if df is not None:
-        _cache_set(cache_key, df)
-    return df
-
-
-# ---------------------------------------------------------------------------
-# fetch_all_ohlcv  (used by DB ingest job — not called on every request)
-# ---------------------------------------------------------------------------
-def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
-    """Fetch OHLCV for all watchlist stocks. Run as a background job."""
-    frames = []
-    total = len(NSE_WATCHLIST) + len(US_WATCHLIST)
-    count = 0
-
-    for symbol in NSE_WATCHLIST:
-        count += 1
-        logger.info("[%d/%d] Fetching %s NSE...", count, total, symbol)
-        df = _cached_fetch_ohlcv(symbol, "NSE", period=period)
-        if df is not None:
-            frames.append(df)
-            logger.info("  → %d rows", len(df))
-        else:
-            logger.warning("  → skipped (no data)")
-
-    for symbol in US_WATCHLIST:
-        count += 1
-        logger.info("[%d/%d] Fetching %s NASDAQ...", count, total, symbol)
-        df = _cached_fetch_ohlcv(symbol, "NASDAQ", period=period)
-        if df is not None:
-            frames.append(df)
-            logger.info("  → %d rows", len(df))
-        else:
-            logger.warning("  → skipped (no data)")
-
-    if not frames:
-        logger.error("No data fetched — check yfinance connectivity")
+        logger.error("yf.download failed: %s", e)
         return pd.DataFrame()
 
-    result = pd.concat(frames, ignore_index=True)
+
+def _parse_batch(raw: pd.DataFrame, tickers: List[str], symbols: List[str],
+                 exchange: str) -> Dict[str, pd.DataFrame]:
+    """
+    Parse yf.download() multi-ticker result into per-symbol DataFrames.
+    Returns dict: symbol → DataFrame
+    """
+    result = {}
+    if raw.empty:
+        return result
+
+    for ticker, symbol in zip(tickers, symbols):
+        try:
+            # Multi-ticker download uses MultiIndex columns: (field, ticker)
+            if len(tickers) == 1:
+                df = raw.copy()
+            else:
+                if ticker not in raw.columns.get_level_values(1):
+                    continue
+                df = raw.xs(ticker, axis=1, level=1).copy()
+
+            df = df.reset_index()
+            df.columns = [c.lower() for c in df.columns]
+            df = df.rename(columns={"date": "ts", "datetime": "ts"})
+            df["symbol"] = symbol
+            df["exchange"] = exchange
+            df["interval"] = "1d"
+
+            cols = ["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]
+            available = [c for c in cols if c in df.columns]
+            df = df[available].dropna(subset=["close"])
+
+            # Strip timezone
+            if "ts" in df.columns:
+                ts_col = df["ts"]
+                if hasattr(ts_col.dtype, "tz") and ts_col.dt.tz is not None:
+                    df["ts"] = ts_col.dt.tz_localize(None)
+
+            if not df.empty:
+                result[symbol] = df.sort_values("ts").reset_index(drop=True)
+        except Exception as e:
+            logger.warning("Parse failed for %s: %s", symbol, e)
+
+    return result
+
+
+# ---------------------------------------------------------------------------
+# Cached group-level fetch
+# ---------------------------------------------------------------------------
+def _get_nse_data(period: str = "3mo") -> Dict[str, pd.DataFrame]:
+    """Return NSE data dict from cache or fresh batch download."""
+    cache_key = f"batch:NSE:{period}"
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        # cached is a sentinel; actual data stored per-symbol
+        pass
+
+    # Check if we have all symbols cached individually
+    all_cached = {}
+    missing = []
+    for symbol in NSE_WATCHLIST:
+        sym_key = f"{symbol}:NSE:{period}"
+        df = _cache_get(sym_key)
+        if df is not None:
+            all_cached[symbol] = df
+        else:
+            missing.append(symbol)
+
+    if not missing:
+        logger.debug("All NSE symbols in cache")
+        return all_cached
+
+    # Batch fetch missing symbols
+    missing_tickers = [f"{s}.NS" for s in missing]
+    logger.info("Batch downloading %d NSE symbols via yf.download...", len(missing_tickers))
+    raw = _batch_download(missing_tickers, period=period)
+    parsed = _parse_batch(raw, missing_tickers, missing, "NSE")
+
+    for symbol, df in parsed.items():
+        _cache_set(f"{symbol}:NSE:{period}", df)
+        all_cached[symbol] = df
+
+    for symbol in missing:
+        if symbol not in parsed:
+            logger.warning("No data for %s.NS", symbol)
+
+    return all_cached
+
+
+def _get_us_data(period: str = "3mo") -> Dict[str, pd.DataFrame]:
+    """Return US data dict from cache or fresh batch download."""
+    all_cached = {}
+    missing = []
+    for symbol in US_WATCHLIST:
+        sym_key = f"{symbol}:NASDAQ:{period}"
+        df = _cache_get(sym_key)
+        if df is not None:
+            all_cached[symbol] = df
+        else:
+            missing.append(symbol)
+
+    if not missing:
+        logger.debug("All US symbols in cache")
+        return all_cached
+
+    logger.info("Batch downloading %d US symbols via yf.download...", len(missing))
+    raw = _batch_download(missing, period=period)
+    parsed = _parse_batch(raw, missing, missing, "NASDAQ")
+
+    for symbol, df in parsed.items():
+        _cache_set(f"{symbol}:NASDAQ:{period}", df)
+        all_cached[symbol] = df
+
+    return all_cached
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV for a single symbol (uses batch cache under the hood)."""
+    if exchange == "NSE":
+        data = _get_nse_data(period=period)
+    else:
+        data = _get_us_data(period=period)
+    return data.get(symbol)
+
+
+def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
+    """Fetch OHLCV for all watchlist stocks."""
+    nse_data = _get_nse_data(period=period)
+    us_data = _get_us_data(period=period)
+    all_data = {**nse_data, **us_data}
+    if not all_data:
+        logger.error("No data fetched — check yfinance connectivity")
+        return pd.DataFrame()
+    result = pd.concat(all_data.values(), ignore_index=True)
     logger.info("Total candles fetched: %d", len(result))
     return result
 
@@ -188,13 +244,15 @@ _CANDIDATES_CACHE_TTL = 3600  # 1 hour
 
 
 def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
-    """Fetch volume surge candidates using per-symbol cache to avoid rate limits."""
+    """Compute volume surge candidates from batch-cached data."""
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
     candidates = []
-    all_symbols = [(s, "NSE") for s in NSE_WATCHLIST] + [(s, "NASDAQ") for s in US_WATCHLIST]
 
-    for symbol, exchange in all_symbols:
-        df = _cached_fetch_ohlcv(symbol, exchange, period="3mo")
+    nse_data = _get_nse_data(period="3mo")
+    us_data = _get_us_data(period="3mo")
+
+    for symbol, df in {**nse_data, **us_data}.items():
+        exchange = "NSE" if symbol in NSE_WATCHLIST else "NASDAQ"
         if df is None or len(df) < 21:
             continue
 
@@ -226,9 +284,9 @@ def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
 
 def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
     """
-    Returns stocks where today's volume >= min_ratio * 20-day avg volume.
-    Uses 1-hour candidates cache. Each symbol is also individually cached,
-    so repeated /signals calls don't re-hit Yahoo Finance.
+    Returns stocks where today's volume >= min_ratio * 20-day avg.
+    Backed by 1-hour cache. Uses batch download — only 2 HTTP requests
+    total (one for NSE, one for US) instead of 50 individual calls.
     """
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
 
