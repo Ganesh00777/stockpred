@@ -3,7 +3,7 @@ import axios from 'axios';
 // ── Change this to your Railway URL after deploy ──
 export const API_BASE = __DEV__
   ? 'http://localhost:8000'
-  : 'https://your-app.railway.app';
+  : 'https://stockpred-production-9af497e9.up.railway.app';
 
 export const WS_BASE = API_BASE.replace('http', 'ws');
 
