@@ -10,7 +10,8 @@ async_engine = create_async_engine(
     max_overflow=20,
     echo=settings.APP_ENV == "development",
     connect_args={"statement_cache_size": 0},
-    execution_options={"compiled_cache": None},
+    pool_pre_ping=True,       # test connection before using it
+    pool_recycle=300,         # recycle connections every 5 min
 )
 
 engine = async_engine  # alias for backwards compat
