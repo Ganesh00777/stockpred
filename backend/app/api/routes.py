@@ -109,14 +109,19 @@ async def register(req: RegisterRequest, db: AsyncSession = Depends(get_db)):
     }
 
 
+class LoginRequest(BaseModel):
+    email: str
+    password: str
+
+
 @router.post("/auth/login", response_model=TokenResponse, tags=["Auth"])
 async def login(
-    form: OAuth2PasswordRequestForm = Depends(),
+    req: LoginRequest,
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(User).where(User.email == form.username))
+    result = await db.execute(select(User).where(User.email == req.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(form.password, user.hashed_password):
+    if not user or not verify_password(req.password, user.hashed_password):
         raise HTTPException(status_code=401, detail="Invalid credentials")
     if not user.is_active:
         raise HTTPException(status_code=403, detail="Account disabled")
