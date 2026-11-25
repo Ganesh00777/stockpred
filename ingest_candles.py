@@ -4,7 +4,7 @@ Runs on GitHub's IPs (not blocked by Yahoo Finance).
 
 Required environment variables (set as GitHub Actions secrets):
   SUPABASE_URL   — e.g. https://gfnafkddhhrjfhwlufwf.supabase.co
-  SUPABASE_KEY   — service role key (not anon key) from Supabase → Settings → API
+  SUPABASE_KEY   — service role key from Supabase → Settings → API Keys → Secret key
 """
 import os
 import sys
@@ -14,6 +14,9 @@ from datetime import datetime, timezone
 import pandas as pd
 import yfinance as yf
 from supabase import create_client, Client
+
+# Disable yfinance SQLite cache — avoids "database is locked" on GitHub Actions
+yf.set_tz_cache_location("/tmp/yfinance_tz")
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
@@ -44,63 +47,51 @@ US_WATCHLIST = [
     "AMZN", "TSLA", "AMD", "NFLX", "PLTR",
 ]
 
-PERIOD = "1y"  # fetch last 1 year — Supabase upsert handles duplicates
+PERIOD = "1y"
 
 
 # ---------------------------------------------------------------------------
-# Fetch via yfinance batch download
+# Fetch per-symbol (more reliable than batch for multi-index parsing)
 # ---------------------------------------------------------------------------
-def fetch_group(tickers: list[str], symbols: list[str], exchange: str) -> pd.DataFrame:
-    logger.info("Downloading %d %s tickers...", len(tickers), exchange)
+def fetch_symbol(ticker: str, symbol: str, exchange: str) -> pd.DataFrame:
     try:
-        raw = yf.download(
-            tickers=tickers,
-            period=PERIOD,
-            interval="1d",
-            auto_adjust=True,
-            group_by="ticker",
-            threads=True,
-            progress=False,
-        )
-    except Exception as e:
-        logger.error("yf.download failed for %s: %s", exchange, e)
-        return pd.DataFrame()
+        t = yf.Ticker(ticker)
+        df = t.history(period=PERIOD, interval="1d", auto_adjust=True)
+        if df is None or df.empty:
+            logger.warning("No data for %s", ticker)
+            return pd.DataFrame()
 
-    if raw is None or raw.empty:
-        logger.warning("Empty result for %s", exchange)
-        return pd.DataFrame()
+        df = df.reset_index()
+        df.columns = [c.lower() for c in df.columns]
+        df = df.rename(columns={"date": "ts", "datetime": "ts"})
 
-    frames = []
-    for ticker, symbol in zip(tickers, symbols):
-        try:
-            if len(tickers) == 1:
-                df = raw.copy()
-            else:
-                if ticker not in raw.columns.get_level_values(1):
-                    logger.warning("No data for %s", ticker)
-                    continue
-                df = raw.xs(ticker, axis=1, level=1).copy()
-
-            df = df.reset_index()
-            df.columns = [c.lower() for c in df.columns]
-            df = df.rename(columns={"date": "ts", "datetime": "ts"})
-            df["symbol"] = symbol
-            df["exchange"] = exchange
-            df["interval"] = "1d"
-
-            cols = ["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]
-            df = df[[c for c in cols if c in df.columns]].dropna(subset=["close"])
-
-            # Strip timezone
-            if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
+        # Strip timezone from ts
+        if "ts" in df.columns:
+            df["ts"] = pd.to_datetime(df["ts"])
+            if hasattr(df["ts"].dt, "tz") and df["ts"].dt.tz is not None:
                 df["ts"] = df["ts"].dt.tz_localize(None)
 
-            if not df.empty:
-                logger.info("  %s: %d rows", symbol, len(df))
-                frames.append(df)
-        except Exception as e:
-            logger.warning("Parse failed for %s: %s", ticker, e)
+        df["symbol"] = symbol
+        df["exchange"] = exchange
+        df["interval"] = "1d"
 
+        cols = ["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]
+        df = df[[c for c in cols if c in df.columns]].dropna(subset=["close"])
+        logger.info("  %s: %d rows", symbol, len(df))
+        return df
+
+    except Exception as e:
+        logger.warning("Failed %s: %s", ticker, e)
+        return pd.DataFrame()
+
+
+def fetch_group(tickers: list[str], symbols: list[str], exchange: str) -> pd.DataFrame:
+    logger.info("Fetching %d %s tickers...", len(tickers), exchange)
+    frames = []
+    for ticker, symbol in zip(tickers, symbols):
+        df = fetch_symbol(ticker, symbol, exchange)
+        if not df.empty:
+            frames.append(df)
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True)
@@ -113,7 +104,6 @@ def upsert_candles(df: pd.DataFrame) -> int:
     if df.empty:
         return 0
 
-    # Convert timestamps to ISO strings for JSON serialization
     df = df.copy()
     df["ts"] = pd.to_datetime(df["ts"]).dt.strftime("%Y-%m-%dT%H:%M:%S+00:00")
     df["volume"] = df["volume"].fillna(0).astype(int)
@@ -125,7 +115,6 @@ def upsert_candles(df: pd.DataFrame) -> int:
     for i in range(0, len(records), batch_size):
         batch = records[i : i + batch_size]
         try:
-            # upsert on (symbol, exchange, interval, ts)
             supabase.table("candles").upsert(
                 batch,
                 on_conflict="symbol,exchange,interval,ts",
@@ -148,7 +137,6 @@ def main():
     total_rows = 0
     errors = 0
 
-    # NSE batch
     nse_tickers = [f"{s}.NS" for s in NSE_WATCHLIST]
     nse_df = fetch_group(nse_tickers, NSE_WATCHLIST, "NSE")
     if not nse_df.empty:
@@ -159,7 +147,6 @@ def main():
         logger.error("NSE fetch returned no data")
         errors += 1
 
-    # US batch
     us_df = fetch_group(US_WATCHLIST, US_WATCHLIST, "NASDAQ")
     if not us_df.empty:
         n = upsert_candles(us_df)
@@ -172,7 +159,7 @@ def main():
     logger.info("=== Done: %d total rows upserted, %d errors ===", total_rows, errors)
 
     if errors > 0 and total_rows == 0:
-        sys.exit(1)  # Fail the GitHub Action if everything failed
+        sys.exit(1)
 
 
 if __name__ == "__main__":
