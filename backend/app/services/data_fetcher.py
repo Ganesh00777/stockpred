@@ -1,8 +1,8 @@
 """
 Data ingestion: market OHLCV + volume data.
-Uses yfinance batch download to fetch all symbols in one HTTP call per group —
-avoids per-symbol rate limiting that blocks Railway datacenter IPs.
-Per-group in-memory cache with 1-hour TTL.
+Reads from Supabase `candles` table — populated daily by GitHub Actions ingest job.
+No live Yahoo Finance calls from Railway (IPs are blocked by Yahoo).
+Per-symbol in-memory cache with 1-hour TTL.
 """
 import logging
 import time
@@ -10,12 +10,30 @@ import threading
 from typing import List, Optional, Dict
 
 import pandas as pd
-import requests
-import yfinance as yf
+from supabase import create_client, Client
 
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Supabase client (uses existing SUPABASE_URL + SUPABASE_KEY env vars)
+# ---------------------------------------------------------------------------
+_supabase: Optional[Client] = None
+_supabase_lock = threading.Lock()
+
+
+def _get_supabase() -> Client:
+    global _supabase
+    if _supabase is None:
+        with _supabase_lock:
+            if _supabase is None:
+                _supabase = create_client(
+                    settings.SUPABASE_URL,
+                    settings.SUPABASE_KEY,
+                )
+    return _supabase
+
 
 # ---------------------------------------------------------------------------
 # In-memory cache  (key → (DataFrame, timestamp))
@@ -61,160 +79,91 @@ US_WATCHLIST = [
     "AMZN", "TSLA", "AMD", "NFLX", "PLTR",
 ]
 
-# yfinance tickers for NSE
-NSE_TICKERS = [f"{s}.NS" for s in NSE_WATCHLIST]
-US_TICKERS = list(US_WATCHLIST)
 
 # ---------------------------------------------------------------------------
-# Batch download via yf.download()
-# Fetches all symbols in ONE HTTP request — avoids per-IP rate limits
+# Fetch from Supabase candles table
 # ---------------------------------------------------------------------------
+def _fetch_from_db(symbol: str, exchange: str, period: str = "1y") -> pd.DataFrame:
+    """
+    Query candles table for a single symbol/exchange.
+    period: '3mo' or '1y' — converted to a date cutoff.
+    """
+    # Convert period string to days
+    period_days = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730}.get(period, 365)
 
-def _batch_download(tickers: List[str], period: str = "3mo") -> pd.DataFrame:
-    """
-    Download OHLCV for all tickers in one batch call.
-    Returns a flat DataFrame with columns: ts, symbol, exchange, interval,
-    open, high, low, close, volume.
-    """
     try:
-        raw = yf.download(
-            tickers=tickers,
-            period=period,
-            interval="1d",
-            auto_adjust=True,
-            group_by="ticker",
-            threads=True,
-            progress=False,
+        sb = _get_supabase()
+        # Supabase postgrest: filter ts >= now - period_days
+        from datetime import datetime, timedelta, timezone
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=period_days)).strftime("%Y-%m-%dT%H:%M:%S+00:00")
+
+        response = (
+            sb.table("candles")
+            .select("ts,open,high,low,close,volume,symbol,exchange,interval")
+            .eq("symbol", symbol)
+            .eq("exchange", exchange)
+            .eq("interval", "1d")
+            .gte("ts", cutoff)
+            .order("ts")
+            .execute()
         )
-        if raw is None or raw.empty:
-            logger.warning("yf.download returned empty for %s tickers", len(tickers))
+
+        rows = response.data
+        if not rows:
+            logger.warning("No candles in DB for %s/%s", symbol, exchange)
             return pd.DataFrame()
-        return raw
+
+        df = pd.DataFrame(rows)
+        df["ts"] = pd.to_datetime(df["ts"])
+        df["close"] = df["close"].astype(float)
+        df["open"] = df["open"].astype(float)
+        df["high"] = df["high"].astype(float)
+        df["low"] = df["low"].astype(float)
+        df["volume"] = df["volume"].astype(float)
+        df = df.sort_values("ts").reset_index(drop=True)
+        logger.debug("DB fetch %s/%s: %d rows", symbol, exchange, len(df))
+        return df
+
     except Exception as e:
-        logger.error("yf.download failed: %s", e)
+        logger.error("DB fetch failed for %s/%s: %s", symbol, exchange, e)
         return pd.DataFrame()
 
 
-def _parse_batch(raw: pd.DataFrame, tickers: List[str], symbols: List[str],
-                 exchange: str) -> Dict[str, pd.DataFrame]:
-    """
-    Parse yf.download() multi-ticker result into per-symbol DataFrames.
-    Returns dict: symbol → DataFrame
-    """
-    result = {}
-    if raw.empty:
-        return result
-
-    for ticker, symbol in zip(tickers, symbols):
-        try:
-            # Multi-ticker download uses MultiIndex columns: (field, ticker)
-            if len(tickers) == 1:
-                df = raw.copy()
-            else:
-                if ticker not in raw.columns.get_level_values(1):
-                    continue
-                df = raw.xs(ticker, axis=1, level=1).copy()
-
-            df = df.reset_index()
-            df.columns = [c.lower() for c in df.columns]
-            df = df.rename(columns={"date": "ts", "datetime": "ts"})
-            df["symbol"] = symbol
-            df["exchange"] = exchange
-            df["interval"] = "1d"
-
-            cols = ["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]
-            available = [c for c in cols if c in df.columns]
-            df = df[available].dropna(subset=["close"])
-
-            # Strip timezone
-            if "ts" in df.columns:
-                ts_col = df["ts"]
-                if hasattr(ts_col.dtype, "tz") and ts_col.dt.tz is not None:
-                    df["ts"] = ts_col.dt.tz_localize(None)
-
-            if not df.empty:
-                result[symbol] = df.sort_values("ts").reset_index(drop=True)
-        except Exception as e:
-            logger.warning("Parse failed for %s: %s", symbol, e)
-
-    return result
-
-
-# ---------------------------------------------------------------------------
-# Cached group-level fetch
-# ---------------------------------------------------------------------------
 def _get_nse_data(period: str = "3mo") -> Dict[str, pd.DataFrame]:
-    """Return NSE data dict from cache or fresh batch download."""
-    cache_key = f"batch:NSE:{period}"
-    cached = _cache_get(cache_key)
-    if cached is not None:
-        # cached is a sentinel; actual data stored per-symbol
-        pass
-
-    # Check if we have all symbols cached individually
-    all_cached = {}
-    missing = []
+    """Return NSE data dict from cache or Supabase."""
+    all_data = {}
     for symbol in NSE_WATCHLIST:
-        sym_key = f"{symbol}:NSE:{period}"
-        df = _cache_get(sym_key)
-        if df is not None:
-            all_cached[symbol] = df
-        else:
-            missing.append(symbol)
-
-    if not missing:
-        logger.debug("All NSE symbols in cache")
-        return all_cached
-
-    # Batch fetch missing symbols
-    missing_tickers = [f"{s}.NS" for s in missing]
-    logger.info("Batch downloading %d NSE symbols via yf.download...", len(missing_tickers))
-    raw = _batch_download(missing_tickers, period=period)
-    parsed = _parse_batch(raw, missing_tickers, missing, "NSE")
-
-    for symbol, df in parsed.items():
-        _cache_set(f"{symbol}:NSE:{period}", df)
-        all_cached[symbol] = df
-
-    for symbol in missing:
-        if symbol not in parsed:
-            logger.warning("No data for %s.NS", symbol)
-
-    return all_cached
+        cache_key = f"{symbol}:NSE:{period}"
+        df = _cache_get(cache_key)
+        if df is None:
+            df = _fetch_from_db(symbol, "NSE", period)
+            if not df.empty:
+                _cache_set(cache_key, df)
+        if not df.empty:
+            all_data[symbol] = df
+    return all_data
 
 
 def _get_us_data(period: str = "3mo") -> Dict[str, pd.DataFrame]:
-    """Return US data dict from cache or fresh batch download."""
-    all_cached = {}
-    missing = []
+    """Return US data dict from cache or Supabase."""
+    all_data = {}
     for symbol in US_WATCHLIST:
-        sym_key = f"{symbol}:NASDAQ:{period}"
-        df = _cache_get(sym_key)
-        if df is not None:
-            all_cached[symbol] = df
-        else:
-            missing.append(symbol)
-
-    if not missing:
-        logger.debug("All US symbols in cache")
-        return all_cached
-
-    logger.info("Batch downloading %d US symbols via yf.download...", len(missing))
-    raw = _batch_download(missing, period=period)
-    parsed = _parse_batch(raw, missing, missing, "NASDAQ")
-
-    for symbol, df in parsed.items():
-        _cache_set(f"{symbol}:NASDAQ:{period}", df)
-        all_cached[symbol] = df
-
-    return all_cached
+        cache_key = f"{symbol}:NASDAQ:{period}"
+        df = _cache_get(cache_key)
+        if df is None:
+            df = _fetch_from_db(symbol, "NASDAQ", period)
+            if not df.empty:
+                _cache_set(cache_key, df)
+        if not df.empty:
+            all_data[symbol] = df
+    return all_data
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Public API  (same interface as before — callers unchanged)
 # ---------------------------------------------------------------------------
 def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV for a single symbol (uses batch cache under the hood)."""
+    """Fetch OHLCV for a single symbol from Supabase candles table."""
     if exchange == "NSE":
         data = _get_nse_data(period=period)
     else:
@@ -223,20 +172,20 @@ def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = 
 
 
 def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
-    """Fetch OHLCV for all watchlist stocks."""
+    """Fetch OHLCV for all watchlist stocks from Supabase."""
     nse_data = _get_nse_data(period=period)
     us_data = _get_us_data(period=period)
     all_data = {**nse_data, **us_data}
     if not all_data:
-        logger.error("No data fetched — check yfinance connectivity")
+        logger.error("No candle data in DB — has the GitHub Actions ingest run yet?")
         return pd.DataFrame()
     result = pd.concat(all_data.values(), ignore_index=True)
-    logger.info("Total candles fetched: %d", len(result))
+    logger.info("Total candles from DB: %d", len(result))
     return result
 
 
 # ---------------------------------------------------------------------------
-# Volume surge candidates  (cached at the candidates level too)
+# Volume surge candidates  (same interface as before)
 # ---------------------------------------------------------------------------
 _CANDIDATES_CACHE: Optional[List[dict]] = None
 _CANDIDATES_CACHE_TIME = 0.0
@@ -244,7 +193,7 @@ _CANDIDATES_CACHE_TTL = 3600  # 1 hour
 
 
 def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
-    """Compute volume surge candidates from batch-cached data."""
+    """Compute volume surge candidates from Supabase candles data."""
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
     candidates = []
 
@@ -285,8 +234,7 @@ def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
 def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
     """
     Returns stocks where today's volume >= min_ratio * 20-day avg.
-    Backed by 1-hour cache. Uses batch download — only 2 HTTP requests
-    total (one for NSE, one for US) instead of 50 individual calls.
+    Reads from Supabase candles table. 1-hour in-memory cache.
     """
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
 
@@ -295,5 +243,5 @@ def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
         logger.debug("Returning cached volume surge candidates")
         return _CANDIDATES_CACHE
 
-    logger.info("Refreshing volume surge candidates cache...")
+    logger.info("Refreshing volume surge candidates from DB...")
     return _refresh_candidates_cache(min_ratio)
