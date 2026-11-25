@@ -57,30 +57,55 @@ def _yf_symbol(symbol: str, exchange: str) -> str:
 
 
 def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
-    """Fetch NSE OHLCV via yfinance .NS suffix with retry."""
-    ticker_sym = f"{symbol}.NS"
-    for attempt in range(3):
-        try:
-            time.sleep(random.uniform(1, 3))
-            session = _make_session()
-            ticker = yf.Ticker(ticker_sym, session=session)
-            df = ticker.history(period=period, interval="1d", auto_adjust=True)
-            if df.empty:
-                continue
-            df = df.reset_index()
-            df.columns = [c.lower() for c in df.columns]
-            df = df.rename(columns={"date": "ts", "datetime": "ts"})
-            df["symbol"] = symbol
-            df["exchange"] = "NSE"
-            df["interval"] = "1d"
-            df = df[["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]]
-            if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
-                df["ts"] = df["ts"].dt.tz_localize(None)
-            return df.dropna()
-        except Exception as e:
-            logger.warning("yfinance attempt %d failed for %s: %s", attempt+1, ticker_sym, e)
-    return None
-
+    """Fetch NSE OHLCV via Twelve Data API — works from Railway."""
+    try:
+        api_key = settings.TWELVE_DATA_API_KEY
+        if not api_key:
+            logger.warning("TWELVE_DATA_API_KEY not set")
+            return None
+        
+        period_days = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730}
+        outputsize = period_days.get(period, 365)
+        
+        url = "https://api.twelvedata.com/time_series"
+        params = {
+            "symbol": f"{symbol}:NSE",
+            "interval": "1day",
+            "outputsize": outputsize,
+            "apikey": api_key,
+            "format": "JSON",
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        if data.get("status") == "error":
+            logger.warning("Twelve Data error for %s: %s", symbol, data.get("message"))
+            return None
+        
+        values = data.get("values", [])
+        if not values:
+            return None
+        
+        rows = []
+        for d in values:
+            rows.append({
+                "ts": pd.to_datetime(d["datetime"]),
+                "open": float(d["open"]),
+                "high": float(d["high"]),
+                "low": float(d["low"]),
+                "close": float(d["close"]),
+                "volume": int(d.get("volume", 0)),
+                "symbol": symbol,
+                "exchange": "NSE",
+                "interval": "1d",
+            })
+        df = pd.DataFrame(rows)
+        df = df.sort_values("ts").reset_index(drop=True)
+        return df
+    except Exception as e:
+        logger.warning("Twelve Data failed for %s: %s", symbol, e)
+        return None
 
 def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
     """

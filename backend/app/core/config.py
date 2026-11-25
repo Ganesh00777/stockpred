@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     KITE_PASSWORD: Optional[str] = None      # Zerodha login password
     KITE_TOTP_SECRET: Optional[str] = None   # TOTP secret for 2FA auto-login
 
+    TWELVE_DATA_API_KEY: str = ""
+    
     # News
     NEWS_API_KEY: Optional[str] = None
 
