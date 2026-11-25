@@ -144,10 +144,13 @@ async def get_signals(
     """Get latest signals for given symbols or full watchlist."""
     target_symbols = symbols.split(",") if symbols else NSE_WATCHLIST[:20]
 
-    # Fetch news once for all
-    all_symbols = NSE_WATCHLIST + US_WATCHLIST
-    articles = fetch_all_news(all_symbols)
-    scored_articles = score_headlines(articles)
+    # Skip news scoring if no API key (too slow without it)
+    from app.core.config import settings as _s
+    if _s.NEWS_API_KEY:
+        articles = fetch_all_news(target_symbols[:limit])
+        scored_articles = score_headlines(articles) if articles else []
+    else:
+        scored_articles = []
 
     results = []
     for symbol in target_symbols[:limit]:
