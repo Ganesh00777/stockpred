@@ -25,7 +25,7 @@ class Settings(BaseSettings):
     KITE_TOTP_SECRET: Optional[str] = None   # TOTP secret for 2FA auto-login
 
     TWELVE_DATA_API_KEY: str = ""
-    
+
     # News
     NEWS_API_KEY: Optional[str] = None
 
@@ -43,6 +43,9 @@ class Settings(BaseSettings):
     # Resend
     RESEND_API_KEY: Optional[str] = None
     EMAIL_FROM: str = "alerts@yourdomain.com"
+    SUPABASE_URL: str = ""
+    SUPABASE_KEY: str = ""
+
 
     # App
     APP_ENV: str = "development"
