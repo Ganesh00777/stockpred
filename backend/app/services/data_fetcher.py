@@ -148,16 +148,16 @@ def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
     total = len(NSE_WATCHLIST) + len(US_WATCHLIST)
     count = 0
 
-   for symbol in NSE_WATCHLIST:
-    count += 1
-    logger.info("[%d/%d] Fetching %s NSE...", count, total, symbol)
-    df = fetch_ohlcv(symbol, "NSE", period=period)
-    if df is not None:
-        frames.append(df)
-        logger.info("  → %d rows", len(df))
-    else:
-        logger.warning("  → skipped (no data)")
-    time.sleep(8)  # Twelve Data free tier: 8 req/min
+    for symbol in NSE_WATCHLIST:
+        count += 1
+        logger.info("[%d/%d] Fetching %s NSE...", count, total, symbol)
+        df = fetch_ohlcv(symbol, "NSE", period=period)
+        if df is not None:
+            frames.append(df)
+            logger.info("  → %d rows", len(df))
+        else:
+            logger.warning("  → skipped (no data)")
+        time.sleep(8)  # Twelve Data free tier: 8 req/min
 
     for symbol in US_WATCHLIST:
         count += 1
