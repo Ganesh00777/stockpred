@@ -2,8 +2,9 @@ import axios from 'axios';
 
 // ── Change this to your Railway URL after deploy ──
 export const API_BASE = __DEV__
-  ? 'http://localhost:8000'
+  ? 'https://stockpred-production-9af497e9.up.railway.app'
   : 'https://stockpred-production-9af497e9.up.railway.app';
+
 
 export const WS_BASE = API_BASE.replace('http', 'ws');
 
@@ -20,7 +21,16 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
-// Token getter — avoids circular import with store
+// Token getter — reads from persisted storage directly to survive reloads
 let _tokenGetter: (() => string | null) = () => null;
 export const setTokenGetter = (fn: () => string | null) => { _tokenGetter = fn; };
-const getToken = () => _tokenGetter();
+const getToken = () => {
+  const fromGetter = _tokenGetter();
+  if (fromGetter) return fromGetter;
+  // Fallback: read from persisted localStorage (web)
+  try {
+    const raw = localStorage.getItem('auth-storage');
+    if (raw) return JSON.parse(raw)?.state?.token ?? null;
+  } catch {}
+  return null;
+};

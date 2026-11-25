@@ -37,3 +37,5 @@ logs/
 
 # Railway / Docker artifacts
 .railway/
+.vercel
+.env*
