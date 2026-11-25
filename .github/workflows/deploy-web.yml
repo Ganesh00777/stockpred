@@ -19,12 +19,10 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '18'
-          cache: 'npm'
-          cache-dependency-path: mobile/package-lock.json
 
       - name: Install dependencies
         working-directory: mobile
-        run: npm install
+        run: npm install --legacy-peer-deps
 
       - name: Build web
         working-directory: mobile
