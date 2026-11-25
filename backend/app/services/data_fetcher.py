@@ -1,7 +1,7 @@
 """
 Data ingestion: market OHLCV + volume data.
-Uses Twelve Data API for NSE stocks (works from Railway), yfinance for US stocks.
-Per-symbol in-memory cache with 1-hour TTL to avoid Twelve Data rate limits.
+Uses yfinance for both NSE (.NS suffix) and US stocks — works from Railway.
+Per-symbol in-memory cache with 1-hour TTL to avoid rate limits.
 """
 import logging
 import time
@@ -61,13 +61,8 @@ US_WATCHLIST = [
     "AMZN", "TSLA", "AMD", "NFLX", "PLTR",
 ]
 
-# TCS trades on BSE, not NSE — Twelve Data returns 404 for TCS/NSE
-_NSE_EXCHANGE_OVERRIDE = {
-    "TCS": "BSE",
-}
-
 # ---------------------------------------------------------------------------
-# Browser-like session for yfinance (US stocks)
+# Browser-like session to reduce Yahoo Finance blocking
 # ---------------------------------------------------------------------------
 _HEADERS = {
     "User-Agent": (
@@ -87,117 +82,58 @@ def _make_session() -> requests.Session:
 
 
 # ---------------------------------------------------------------------------
-# Twelve Data — NSE / BSE
+# Core yfinance fetch (NSE and US)
 # ---------------------------------------------------------------------------
-def _fetch_nse_ohlcv(symbol: str, period: str = "1y") -> Optional[pd.DataFrame]:
-    """Fetch NSE/BSE OHLCV via Twelve Data API (works from Railway)."""
-    try:
-        api_key = settings.TWELVE_DATA_API_KEY
-        if not api_key:
-            logger.warning("TWELVE_DATA_API_KEY not set")
-            return None
-
-        period_days = {"3mo": 90, "6mo": 180, "1y": 365, "2y": 730}
-        outputsize = period_days.get(period, 365)
-        exchange = _NSE_EXCHANGE_OVERRIDE.get(symbol, "NSE")
-
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": symbol,       # e.g. "RELIANCE" (no suffix)
-            "exchange": exchange,   # "NSE" or "BSE"
-            "interval": "1day",
-            "outputsize": outputsize,
-            "apikey": api_key,
-            "format": "JSON",
-        }
-        resp = requests.get(url, params=params, timeout=15)
-        resp.raise_for_status()
-        data = resp.json()
-
-        if data.get("status") == "error":
-            logger.warning("Twelve Data error for %s: %s", symbol, data.get("message"))
-            return None
-
-        values = data.get("values", [])
-        if not values:
-            return None
-
-        rows = [{
-            "ts": pd.to_datetime(d["datetime"]),
-            "open": float(d["open"]),
-            "high": float(d["high"]),
-            "low": float(d["low"]),
-            "close": float(d["close"]),
-            "volume": int(d.get("volume", 0)),
-            "symbol": symbol,
-            "exchange": exchange,
-            "interval": "1d",
-        } for d in values]
-
-        df = pd.DataFrame(rows).sort_values("ts").reset_index(drop=True)
-        return df
-
-    except Exception as e:
-        logger.warning("Twelve Data failed for %s: %s", symbol, e)
-        return None
-
-
-# ---------------------------------------------------------------------------
-# yfinance — US stocks
-# ---------------------------------------------------------------------------
-def _fetch_us_ohlcv(symbol: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch US stock OHLCV via yfinance (may be blocked on Railway IPs)."""
-    time.sleep(random.uniform(0.5, 1.5))
+def _fetch_yfinance(ticker_sym: str, symbol: str, exchange: str,
+                    period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV via yfinance. Works for both .NS (NSE) and plain US tickers."""
+    time.sleep(random.uniform(0.3, 0.8))
     try:
         session = _make_session()
-        ticker = yf.Ticker(symbol, session=session)
+        ticker = yf.Ticker(ticker_sym, session=session)
         df = ticker.history(period=period, interval=interval, auto_adjust=True)
         if df.empty:
-            logger.warning("No data returned for %s", symbol)
+            logger.warning("No data returned for %s", ticker_sym)
             return None
         df = df.reset_index()
         df.columns = [c.lower() for c in df.columns]
         df = df.rename(columns={"date": "ts", "datetime": "ts"})
         df["symbol"] = symbol
-        df["exchange"] = "NASDAQ"
+        df["exchange"] = exchange
         df["interval"] = interval
         df = df[["ts", "symbol", "exchange", "interval", "open", "high", "low", "close", "volume"]]
+        # Strip timezone info
         if hasattr(df["ts"].dtype, "tz") and df["ts"].dt.tz is not None:
             df["ts"] = df["ts"].dt.tz_localize(None)
         return df.dropna()
     except Exception as e:
-        logger.error("yfinance failed for %s: %s", symbol, e)
+        logger.error("yfinance failed for %s: %s", ticker_sym, e)
         return None
 
 
 # ---------------------------------------------------------------------------
-# Public fetch with per-symbol cache + rate-limit delay
+# Public fetch functions
 # ---------------------------------------------------------------------------
 def fetch_ohlcv(symbol: str, exchange: str, period: str = "1y", interval: str = "1d") -> Optional[pd.DataFrame]:
-    """Fetch OHLCV. NSE/BSE → Twelve Data. US → yfinance."""
+    """Fetch OHLCV. NSE → yfinance with .NS suffix. US → yfinance plain."""
     if exchange == "NSE":
-        df = _fetch_nse_ohlcv(symbol, period)
-        if df is None:
-            logger.warning("NSE API failed for %s, skipping", symbol)
-        return df
-    return _fetch_us_ohlcv(symbol, period, interval)
+        ticker_sym = f"{symbol}.NS"
+    else:
+        ticker_sym = symbol
+    return _fetch_yfinance(ticker_sym, symbol, exchange, period, interval)
 
 
 def _cached_fetch_ohlcv(symbol: str, exchange: str, period: str = "3mo") -> Optional[pd.DataFrame]:
     """
     Fetch with 1-hour in-memory cache.
-    For NSE stocks, adds an 8-second delay before hitting the API
-    to stay within Twelve Data's 8 req/min free-tier limit.
+    Returns cached data if fresh; otherwise fetches from Yahoo Finance.
+    Small random delay to avoid hammering Yahoo on cold start.
     """
     cache_key = f"{symbol}:{exchange}:{period}"
     cached = _cache_get(cache_key)
     if cached is not None:
         logger.debug("Cache hit for %s", cache_key)
         return cached
-
-    # Rate-limit delay only when we actually need to call the API
-    if exchange == "NSE":
-        time.sleep(8)
 
     df = fetch_ohlcv(symbol, exchange, period=period)
     if df is not None:
@@ -209,7 +145,7 @@ def _cached_fetch_ohlcv(symbol: str, exchange: str, period: str = "3mo") -> Opti
 # fetch_all_ohlcv  (used by DB ingest job — not called on every request)
 # ---------------------------------------------------------------------------
 def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
-    """Fetch OHLCV for all watchlist stocks. Slow — run as a background job."""
+    """Fetch OHLCV for all watchlist stocks. Run as a background job."""
     frames = []
     total = len(NSE_WATCHLIST) + len(US_WATCHLIST)
     count = 0
@@ -223,7 +159,6 @@ def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
             logger.info("  → %d rows", len(df))
         else:
             logger.warning("  → skipped (no data)")
-        # _cached_fetch_ohlcv already sleeps 8s before an uncached NSE call
 
     for symbol in US_WATCHLIST:
         count += 1
@@ -236,7 +171,7 @@ def fetch_all_ohlcv(period: str = "1y") -> pd.DataFrame:
             logger.warning("  → skipped (no data)")
 
     if not frames:
-        logger.error("No data fetched — check API connectivity")
+        logger.error("No data fetched — check yfinance connectivity")
         return pd.DataFrame()
 
     result = pd.concat(frames, ignore_index=True)
@@ -253,14 +188,12 @@ _CANDIDATES_CACHE_TTL = 3600  # 1 hour
 
 
 def _refresh_candidates_cache(min_ratio: float = 2.0) -> List[dict]:
-    """Fetch volume surge candidates using per-symbol cache to avoid 429s."""
+    """Fetch volume surge candidates using per-symbol cache to avoid rate limits."""
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
     candidates = []
     all_symbols = [(s, "NSE") for s in NSE_WATCHLIST] + [(s, "NASDAQ") for s in US_WATCHLIST]
 
     for symbol, exchange in all_symbols:
-        # _cached_fetch_ohlcv: returns from cache if fresh, otherwise fetches
-        # with rate-limit delay (8s for NSE). Cache hit = no delay, no API call.
         df = _cached_fetch_ohlcv(symbol, exchange, period="3mo")
         if df is None or len(df) < 21:
             continue
@@ -295,7 +228,7 @@ def fetch_volume_surge_candidates(min_ratio: float = 2.0) -> List[dict]:
     """
     Returns stocks where today's volume >= min_ratio * 20-day avg volume.
     Uses 1-hour candidates cache. Each symbol is also individually cached,
-    so repeated /signals calls don't re-hit the API.
+    so repeated /signals calls don't re-hit Yahoo Finance.
     """
     global _CANDIDATES_CACHE, _CANDIDATES_CACHE_TIME
 
