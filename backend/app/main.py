@@ -22,7 +22,7 @@ async def lifespan(app: FastAPI):
 
     # 1. Ensure DB tables + TimescaleDB hypertable exist
     try:
-        await create_all_tables()
+       ## await create_all_tables()
         await init_timescale()
         logger.info("DB ready ✅")
     except Exception as e:
