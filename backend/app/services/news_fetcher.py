@@ -19,6 +19,27 @@ RSS_FEEDS = [
     ("LiveMint Markets", "https://www.livemint.com/rss/markets"),
 ]
 
+# NSE watchlist — top Nifty 50 + popular mid-caps
+NSE_WATCHLIST = [
+    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK", "HINDUNILVR",
+    "BHARTIARTL", "ITC", "KOTAKBANK", "LT", "SBIN", "AXISBANK", "BAJFINANCE",
+    "ASIANPAINT", "MARUTI", "TITAN", "SUNPHARMA", "WIPRO", "ULTRACEMCO",
+    "NESTLEIND", "POWERGRID", "NTPC", "ONGC", "COALINDIA", "JSWSTEEL",
+    "TATAMOTORS", "TATASTEEL", "ADANIPORTS", "ADANIENT", "HCLTECH",
+    "TECHM", "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP", "BAJAJFINSV",
+    "BPCL", "EICHERMOT", "GRASIM", "HEROMOTOCO", "INDUSINDBK", "M&M",
+    "SBILIFE", "SHREECEM", "TATACONSUM", "VEDL", "BRITANNIA", "LTIM", "HDFCLIFE",
+]
+
+# US watchlist — S&P 500 tech + popular large-caps
+US_WATCHLIST = [
+    "AAPL", "MSFT", "GOOGL", "AMZN", "NVDA", "META", "TSLA", "AVGO",
+    "JPM", "V", "UNH", "MA", "JNJ", "HD", "PG", "MRK", "ABBV", "LLY",
+    "BAC", "CVX", "KO", "PEP", "TMO", "COST", "WMT", "MCD", "CSCO",
+    "ACN", "ABT", "DHR", "NKE", "ADBE", "CRM", "TXN", "ORCL", "QCOM",
+    "AMD", "INTC", "NFLX", "PYPL", "UBER", "SHOP", "SQ", "COIN", "PLTR",
+]
+
 
 def fetch_newsapi(query: str = "Indian stock market NSE BSE", hours_back: int = 48) -> List[Dict]:
     """Fetch headlines from NewsAPI."""
